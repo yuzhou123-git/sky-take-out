@@ -1,0 +1,35 @@
+# ===== Java / Maven =====
+target/
+*.class
+*.jar
+*.war
+*.ear
+!.mvn/wrapper/maven-wrapper.jar
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+out/
+
+# ===== 日志 =====
+logs/
+*.log
+*.log.*
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 敏感配置：真实数据库密码不要提交 =====
+# 说明：application-dev.yml 里保存了本机 MySQL 账号密码，
+# 提交到公开仓库等于泄露。本地保留真实值，提交时用示例文件代替。
+# 如果你的仓库是私有的，可以删掉下面这一行，让配置文件正常提交。
+**/application-dev.yml
+
+# nginx 运行时产生的日志和临时文件
+前端运行环境/nginx-1.20.2/logs/
+前端运行环境/nginx-1.20.2/*.pid

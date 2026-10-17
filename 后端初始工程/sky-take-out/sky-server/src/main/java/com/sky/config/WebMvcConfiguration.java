@@ -64,5 +64,11 @@ public class WebMvcConfiguration extends WebMvcConfigurationSupport {
     protected void addResourceHandlers(ResourceHandlerRegistry registry) {
         registry.addResourceHandler("/doc.html").addResourceLocations("classpath:/META-INF/resources/");
         registry.addResourceHandler("/webjars/**").addResourceLocations("classpath:/META-INF/resources/webjars/");
+
+        // 前端静态资源映射：整合后的管理端页面放在 classpath:/static/ 下。
+        // 因为继承 WebMvcConfigurationSupport 会关闭 Spring Boot 默认的静态资源自动配置，
+        // 所以必须在这里显式声明，否则页面和 js/css 都访问不到。
+        log.info("开始注册前端静态资源映射...");
+        registry.addResourceHandler("/**").addResourceLocations("classpath:/static/");
     }
 }

@@ -1,0 +1,17 @@
+# 数据库连接配置示例文件
+#
+# 用法：复制本文件为 application-dev.yml，然后把用户名密码改成你自己的。
+#   PowerShell: Copy-Item application-dev.example.yml application-dev.yml
+#
+# 为什么真实配置不提交到 Git：
+#   本文件包含数据库账号密码，提交到公开仓库等于把密码公开。
+#   所以 application-dev.yml 已被 .gitignore 排除，仓库里只保留这份模板。
+
+sky:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    host: localhost
+    port: 3306
+    database: sky_take_out
+    username: 你的数据库用户名
+    password: 你的数据库密码
