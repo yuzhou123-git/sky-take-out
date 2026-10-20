@@ -13,5 +13,5 @@ sky:
     host: localhost
     port: 3306
     database: sky_take_out
-    username: 你的数据库用户名
-    password: 你的数据库密码
+    username: root
+    password: 273101Qq.
