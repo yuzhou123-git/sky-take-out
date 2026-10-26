@@ -8,10 +8,12 @@ import com.sky.dto.DishDTO;
 import com.sky.dto.DishPageQueryDTO;
 import com.sky.entity.Dish;
 import com.sky.entity.DishFlavor;
+import com.sky.entity.Setmeal;
 import com.sky.exception.DeletionNotAllowedException;
 import com.sky.mapper.DishFlavorMapper;
 import com.sky.mapper.DishMapper;
 import com.sky.mapper.SetmealDishMapper;
+import com.sky.mapper.SetmealMapper;
 import com.sky.result.PageResult;
 import com.sky.service.DishService;
 import com.sky.vo.DishVO;
@@ -22,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 @Service
@@ -74,6 +77,8 @@ public class DishServiceImpl implements DishService {
 
     @Autowired
     private SetmealDishMapper setmealDishMapper;
+    @Autowired
+    private SetmealMapper setmealMapper;
     /**
      * 菜品批量删除
      *
@@ -189,5 +194,40 @@ public class DishServiceImpl implements DishService {
 
         return dishVOList;
     }
+
+    /**
+     * 菜品起售停售
+     *
+     * @param status 0 停售，1 起售
+     * @param dishId 菜品id
+     */
+    @Override
+    @Transactional
+    public void startOrStop(Integer status, Long dishId) {
+        // 1、只更新状态：其余字段都是 null，会被 XML 中 update 的 <if> 跳过
+        Dish dish = Dish.builder()
+                .id(dishId)
+                .status(status)
+                .build();
+        dishMapper.update(dish);
+
+        // 2、停售菜品时，需要把「包含该菜品的套餐」一起停售，
+        //    否则会出现套餐里在卖已停售菜品的数据不一致
+        if (StatusConstant.DISABLE.equals(status)) {
+            List<Long> setmealIds = setmealDishMapper.getSetmealIdsByDishIds(
+                    Collections.singletonList(dishId));
+            if (setmealIds != null && !setmealIds.isEmpty()) {
+                for (Long setmealId : setmealIds) {
+                    Setmeal setmeal = Setmeal.builder()
+                            .id(setmealId)
+                            .status(StatusConstant.DISABLE)
+                            .build();
+                    setmealMapper.update(setmeal);
+                }
+            }
+        }
+    }
+
+
 
 }
