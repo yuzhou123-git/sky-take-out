@@ -12,4 +12,10 @@
         </foreach>
     </insert>
 
+    <select id="getByOrderId" resultType="OrderDetail">
+        select *
+        from order_detail
+        where order_id = #{orderId}
+    </select>
+
 </mapper>

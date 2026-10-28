@@ -11,4 +11,69 @@
                 #{payStatus}, #{amount}, #{remark}, #{phone}, #{address}, #{consignee},
                 #{estimatedDeliveryTime}, #{deliveryStatus}, #{packAmount}, #{tablewareNumber}, #{tablewareStatus})
     </insert>
+
+    <select id="pageQuery" resultType="Orders">
+        select * from orders
+        <where>
+            <if test="number != null and number!=''">
+                and number like concat('%',#{number},'%')
+            </if>
+            <if test="phone != null and phone!=''">
+                and phone like concat('%',#{phone},'%')
+            </if>
+            <if test="userId != null">
+                and user_id = #{userId}
+            </if>
+            <if test="status != null">
+                and status = #{status}
+            </if>
+            <if test="beginTime != null">
+                and order_time &gt;= #{beginTime}
+            </if>
+            <if test="endTime != null">
+                and order_time &lt;= #{endTime}
+            </if>
+        </where>
+        order by order_time desc
+    </select>
+
+    <!--
+        动态更新订单：传什么改什么，null 的字段不动。
+        用法举例：
+          只改状态与支付信息 → Orders.builder().id(id).status(2).payStatus(1).checkoutTime(now).build()
+          取消订单           → Orders.builder().id(id).status(6).cancelReason("...").cancelTime(now).build()
+
+        注意：pack_amount 和 tableware_number 在 Orders 实体里是 int（基本类型），
+             而 <if test="xxx != null"> 对基本类型永远成立（基本类型不能为 null），
+             一旦写进来，每次 update 都会把这两列刷成 0，覆盖掉真实数据。
+             所以这里刻意不包含它们；要动态更新请先把实体字段改成 Integer。
+    -->
+    <update id="update">
+        update orders
+        <set>
+            <if test="number != null">number = #{number},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="userId != null">user_id = #{userId},</if>
+            <if test="addressBookId != null">address_book_id = #{addressBookId},</if>
+            <if test="orderTime != null">order_time = #{orderTime},</if>
+            <if test="checkoutTime != null">checkout_time = #{checkoutTime},</if>
+            <if test="payMethod != null">pay_method = #{payMethod},</if>
+            <if test="payStatus != null">pay_status = #{payStatus},</if>
+            <if test="amount != null">amount = #{amount},</if>
+            <if test="remark != null">remark = #{remark},</if>
+            <if test="userName != null">user_name = #{userName},</if>
+            <if test="phone != null">phone = #{phone},</if>
+            <if test="address != null">address = #{address},</if>
+            <if test="consignee != null">consignee = #{consignee},</if>
+            <if test="cancelReason != null">cancel_reason = #{cancelReason},</if>
+            <if test="rejectionReason != null">rejection_reason = #{rejectionReason},</if>
+            <if test="cancelTime != null">cancel_time = #{cancelTime},</if>
+            <if test="estimatedDeliveryTime != null">estimated_delivery_time = #{estimatedDeliveryTime},</if>
+            <if test="deliveryStatus != null">delivery_status = #{deliveryStatus},</if>
+            <if test="deliveryTime != null">delivery_time = #{deliveryTime},</if>
+            <if test="tablewareStatus != null">tableware_status = #{tablewareStatus},</if>
+        </set>
+        where id = #{id}
+    </update>
+
 </mapper>
