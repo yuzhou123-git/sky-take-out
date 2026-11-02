@@ -6,6 +6,12 @@ spring:
     active: dev
   main:
     allow-circular-references: true
+  # 开发期：静态资源不缓存，避免改了 js 后浏览器还用旧文件（上线前可去掉）
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-store: true
   datasource:
     druid:
       driver-class-name: ${sky.datasource.driver-class-name}
@@ -54,6 +60,12 @@ sky:
   wechat:
     appid: ${sky.wechat.appid}
     secret: ${sky.wechat.secret}
-
+  shop:
+    # 店铺地址用于百度地理编码，必须尽量精确：
+    # "广东工业大学大学城校区工学一号馆"        → precise=0（模糊打点）、level=教育、confidence=70
+    # "广东省广州市番禺区大学城中环西路100号"    → precise=1（精确打点）、level=门址、confidence=80  ✅
+    address: 广东省广州市番禺区大学城中环西路100号
+  baidu:
+    ak: 1GsaACr26S1OYui33DPd9eZHfgprCTP8
 
 

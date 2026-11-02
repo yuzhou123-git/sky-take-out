@@ -1,5 +1,8 @@
 package com.sky.service.impl;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import com.github.pagehelper.Page;
 import com.github.pagehelper.PageHelper;
 import com.github.xiaoymin.knife4j.core.util.CollectionUtils;
@@ -19,20 +22,25 @@ import com.sky.mapper.OrderMapper;
 import com.sky.mapper.ShoppingCartMapper;
 import com.sky.result.PageResult;
 import com.sky.service.OrderService;
+import com.sky.utils.HttpClientUtil;
 import com.sky.vo.OrderPaymentVO;
 import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.vo.OrderVO;
+import com.sky.websocket.WebSocketServer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -50,6 +58,12 @@ public class OrderServiceImpl implements OrderService {
     private ShoppingCartMapper shoppingCartMapper;
     @Autowired
     private AddressBookMapper addressBookMapper;
+
+    @Value("${sky.shop.address}")
+    private String shopAddress;
+
+    @Value("${sky.baidu.ak}")
+    private String ak;
 
 
     /**
@@ -75,6 +89,12 @@ public class OrderServiceImpl implements OrderService {
         if (shoppingCartList == null || shoppingCartList.size() == 0) {
             throw new ShoppingCartBusinessException(MessageConstant.SHOPPING_CART_IS_NULL);
         }
+
+        //检查用户的收货地址是否超出配送范围
+        // 依赖百度地图 3 个接口（店铺地理编码 → 收货地址地理编码 → 路线规划），
+        // AK 的 IP 白名单必须包含本机出口 IP，否则会返回 status=210（APP IP校验失败）→ 下单失败。
+        checkOutOfRange(addressBook.getCityName() + addressBook.getDistrictName() + addressBook.getDetail());
+
 
         //构造订单数据
         Orders order = new Orders();
@@ -158,6 +178,17 @@ public class OrderServiceImpl implements OrderService {
                 .checkoutTime(LocalDateTime.now())// 结账时间
                 .build();
         orderMapper.update(orders);
+
+        // 4.1【来单提醒】支付成功 → 通过 WebSocket 推送 type=1 消息给管理端
+        //     （原来这段逻辑写在 paySuccess() 里，但 paySuccess 从没被调用过，
+        //      而且它依赖 BaseContext.getCurrentId()，在支付回调线程里会拿不到用户 id，
+        //      所以这里直接在当前请求线程里推送。）
+        Map<String, Object> msg = new HashMap<>();
+        msg.put("type", 1);                                  // 1 = 来单提醒
+        msg.put("orderId", ordersDB.getId());
+        msg.put("content", "订单号：" + ordersDB.getNumber());
+        webSocketServer.sendToAllClient(JSON.toJSONString(msg));
+        log.info("已向管理端推送来单提醒：{}", msg);
 
         // 5、返回一份"长得像真微信支付"的假参数，方便以后无缝换成真支付
         return OrderPaymentVO.builder()
@@ -499,5 +530,142 @@ public class OrderServiceImpl implements OrderService {
 
         orderMapper.update(orders);
     }
+
+    /**
+     * 检查客户的收货地址是否超出配送范围
+     * <p>
+     * 【降级策略】百度地图是外部依赖，可能出现：
+     * 1. 配额用完（返回 status=202/203 等）
+     * 2. IP 白名单没配好（status=210）
+     * 3. 网络超时 / JSON 解析失败 / HttpClientUtil 的 NPE
+     * 这些都属于「校验能力不可用」，**不应该阻塞用户下单**，
+     * 所以统一记 warn 日志后放行；只有明确算出「距离 > 5000 米」时才拦截。
+     *
+     * @param address 用户收货地址
+     */
+    private void checkOutOfRange(String address) {
+        try {
+            Map map = new HashMap();
+            map.put("address", shopAddress);
+            map.put("output", "json");
+            map.put("ak", ak);
+
+            //获取店铺的经纬度坐标
+            String shopCoordinate = HttpClientUtil.doGet("https://api.map.baidu.com/geocoding/v3", map);
+            JSONObject jsonObject = JSON.parseObject(shopCoordinate);
+            if (!"0".equals(jsonObject.getString("status"))) {
+                log.warn("店铺地址解析失败（百度返回 status={}），跳过配送范围校验：{}",
+                        jsonObject.getString("status"), shopCoordinate);
+                return;
+            }
+
+            //数据解析
+            JSONObject location = jsonObject.getJSONObject("result").getJSONObject("location");
+            String shopLngLat = location.getString("lat") + "," + location.getString("lng");
+
+            map.put("address", address);
+            //获取用户收货地址的经纬度坐标
+            String userCoordinate = HttpClientUtil.doGet("https://api.map.baidu.com/geocoding/v3", map);
+            jsonObject = JSON.parseObject(userCoordinate);
+            if (!"0".equals(jsonObject.getString("status"))) {
+                log.warn("收货地址解析失败（百度返回 status={}），跳过配送范围校验：{}",
+                        jsonObject.getString("status"), userCoordinate);
+                return;
+            }
+
+            //数据解析
+            location = jsonObject.getJSONObject("result").getJSONObject("location");
+            String userLngLat = location.getString("lat") + "," + location.getString("lng");
+
+            map.put("origin", shopLngLat);
+            map.put("destination", userLngLat);
+            map.put("steps_info", "0");
+
+            //路线规划
+            String json = HttpClientUtil.doGet("https://api.map.baidu.com/directionlite/v1/driving", map);
+            jsonObject = JSON.parseObject(json);
+            if (!"0".equals(jsonObject.getString("status"))) {
+                log.warn("配送路线规划失败（百度返回 status={}），跳过配送范围校验：{}",
+                        jsonObject.getString("status"), json);
+                return;
+            }
+
+            //数据解析
+            JSONObject result = jsonObject.getJSONObject("result");
+            JSONArray jsonArray = (JSONArray) result.get("routes");
+            if (jsonArray == null || jsonArray.isEmpty()) {
+                log.warn("配送路线为空，跳过配送范围校验");
+                return;
+            }
+            Integer distance = ((Number) ((JSONObject) jsonArray.get(0)).get("distance")).intValue();
+            log.info("店铺与收货地址的配送距离：{} 米", distance);
+
+            if (distance > 5000) {
+                //配送距离超过5000米：这是业务结论，必须拦截
+                throw new OrderBusinessException("超出配送范围");
+            }
+        } catch (OrderBusinessException e) {
+            //「超出配送范围」是有效结论，继续往上抛，让用户看到提示
+            throw e;
+        } catch (Exception e) {
+            //其余情况（网络异常、额度用完、NPE、JSON 解析失败）一律降级放行
+            log.warn("配送范围校验异常，跳过校验放行本次下单：{}", e.toString());
+        }
+    }
+
+    @Autowired
+    private WebSocketServer webSocketServer;
+    /**
+     * 支付成功，修改订单状态
+     *
+     * @param outTradeNo
+     */
+    public void paySuccess(String outTradeNo) {
+        // 当前登录用户id
+        Long userId = BaseContext.getCurrentId();
+
+        // 根据订单号查询当前用户的订单
+        Orders ordersDB = orderMapper.getByNumberAndUserId(outTradeNo, userId);
+
+        // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
+        Orders orders = Orders.builder()
+                .id(ordersDB.getId())
+                .status(Orders.TO_BE_CONFIRMED)
+                .payStatus(Orders.PAID)
+                .checkoutTime(LocalDateTime.now())
+                .build();
+
+        orderMapper.update(orders);
+        //////////////////////////////////////////////
+        Map map = new HashMap();
+        map.put("type", 1);//消息类型，1表示来单提醒
+        map.put("orderId", orders.getId());
+        map.put("content", "订单号：" + outTradeNo);
+
+        //通过WebSocket实现来单提醒，向客户端浏览器推送消息
+        webSocketServer.sendToAllClient(JSON.toJSONString(map));
+        ///////////////////////////////////////////////////
+    }
+
+    /**
+     * 用户催单
+     *
+     * @param id
+     */
+    public void reminder(Long id) {
+        // 查询订单是否存在
+        Orders orders = orderMapper.getById(id);
+        if (orders == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
+        }
+
+        //基于WebSocket实现催单
+        Map map = new HashMap();
+        map.put("type", 2);//2代表用户催单
+        map.put("orderId", id);
+        map.put("content", "订单号：" + orders.getNumber());
+        webSocketServer.sendToAllClient(JSON.toJSONString(map));
+    }
+
 
 }
