@@ -2,17 +2,29 @@ package com.sky.service.impl;
 
 import com.sky.dto.GoodsSalesDTO;
 import com.sky.entity.Orders;
+import com.sky.exception.BaseException;
 import com.sky.mapper.OrderMapper;
 import com.sky.mapper.UserMapper;
 import com.sky.service.ReportService;
-import com.sky.vo.OrderReportVO;
-import com.sky.vo.SalesTop10ReportVO;
-import com.sky.vo.TurnoverReportVO;
-import com.sky.vo.UserReportVO;
+import com.sky.service.WorkspaceService;
+import com.sky.vo.*;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang.StringUtils;
+import org.apache.poi.xssf.usermodel.XSSFRow;
+import org.apache.poi.xssf.usermodel.XSSFSheet;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import javax.servlet.ServletOutputStream;
+import javax.servlet.http.HttpServletResponse;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URLEncoder;
+import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -26,10 +38,21 @@ import java.util.stream.Collectors;
 @Slf4j
 public class ReportServiceImpl implements ReportService {
 
+    /** Excel 模板在 classpath 中的位置 */
+    private static final String TEMPLATE_PATH = "template/运营数据报表模板.xlsx";
+    /** 导出到本地磁盘时使用的文件名 */
+    private static final String EXPORT_FILE_NAME = "运营数据统计报表.xlsx";
+
     @Autowired
     private OrderMapper orderMapper;
     @Autowired
     private UserMapper userMapper;
+    @Autowired
+    private WorkspaceService workspaceService;
+
+    /** Excel 导出目录，默认项目根目录，可在 application.yml 的 sky.report.export-dir 覆盖 */
+    @Value("${sky.report.export-dir:D:/JavaCode/sky-take-out}")
+    private String exportDir;
     /**
      * 根据时间区间统计营业额
      * @param begin
@@ -195,4 +218,91 @@ public class ReportServiceImpl implements ReportService {
                 .numberList(numberList)
                 .build();
     }
+
+    /**导出近30天的运营数据报表
+     * <p>
+     * 生成后做两件事：
+     * 1）把 xlsx 字节保存到本地磁盘（sky.report.export-dir，默认 D:/JavaCode/sky-take-out）；
+     * 2）把同样的字节写回浏览器，页面上的「数据导出」按钮照常触发下载。
+     *
+     * @param response
+     **/
+    public void exportBusinessData(HttpServletResponse response) {
+        LocalDate begin = LocalDate.now().minusDays(30);
+        LocalDate end = LocalDate.now().minusDays(1);
+        //查询概览运营数据，提供给Excel模板文件
+        BusinessDataVO businessData = workspaceService.getBusinessData(LocalDateTime.of(begin,LocalTime.MIN), LocalDateTime.of(end, LocalTime.MAX));
+        InputStream inputStream = this.getClass().getClassLoader().getResourceAsStream(TEMPLATE_PATH);
+        if (inputStream == null) {
+            throw new BaseException("Excel 模板不存在：" + TEMPLATE_PATH);
+        }
+        try (XSSFWorkbook excel = new XSSFWorkbook(inputStream)) {
+            //获得Excel文件中的一个Sheet页
+            XSSFSheet sheet = excel.getSheet("Sheet1");
+
+            sheet.getRow(1).getCell(1).setCellValue(begin + "至" + end);
+            //获得第4行
+            XSSFRow row = sheet.getRow(3);
+            //获取单元格
+            row.getCell(2).setCellValue(businessData.getTurnover());
+            row.getCell(4).setCellValue(businessData.getOrderCompletionRate());
+            row.getCell(6).setCellValue(businessData.getNewUsers());
+            row = sheet.getRow(4);
+            row.getCell(2).setCellValue(businessData.getValidOrderCount());
+            row.getCell(4).setCellValue(businessData.getUnitPrice());
+            for (int i = 0; i < 30; i++) {
+                LocalDate date = begin.plusDays(i);
+                //准备明细数据
+                businessData = workspaceService.getBusinessData(LocalDateTime.of(date,LocalTime.MIN), LocalDateTime.of(date, LocalTime.MAX));
+                row = sheet.getRow(7 + i);
+                row.getCell(1).setCellValue(date.toString());
+                row.getCell(2).setCellValue(businessData.getTurnover());
+                row.getCell(3).setCellValue(businessData.getValidOrderCount());
+                row.getCell(4).setCellValue(businessData.getOrderCompletionRate());
+                row.getCell(5).setCellValue(businessData.getUnitPrice());
+                row.getCell(6).setCellValue(businessData.getNewUsers());
+            }
+
+            //先把工作簿序列化成字节数组：后面要写两次（本地文件 + 浏览器响应），
+            //只序列化一次，避免重复调用 XSSFWorkbook.write()。
+            byte[] bytes;
+            try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                excel.write(bos);
+                bytes = bos.toByteArray();
+            }
+
+            //1、保存到本地磁盘
+            File target = saveToLocal(bytes);
+            log.info("运营数据报表已导出到本地：{}（{} 字节）", target.getAbsolutePath(), bytes.length);
+
+            //2、同时写回浏览器，保证前端「数据导出」按钮依旧可用
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition",
+                    "attachment;filename=" + URLEncoder.encode(target.getName(), "UTF-8"));
+            ServletOutputStream out = response.getOutputStream();
+            out.write(bytes);
+            out.flush();
+        } catch (IOException e) {
+            log.error("导出运营数据报表失败", e);
+            throw new BaseException("导出运营数据报表失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * 把 Excel 字节写入配置的本地目录，返回写好的文件
+     *
+     * @param bytes xlsx 文件字节
+     * @return 落盘后的文件对象
+     */
+    private File saveToLocal(byte[] bytes) throws IOException {
+        File dir = new File(exportDir);
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new IOException("导出目录不存在且创建失败：" + dir.getAbsolutePath());
+        }
+        File target = new File(dir, EXPORT_FILE_NAME);
+        Files.write(target.toPath(), bytes);
+        return target;
+    }
+
+
 }

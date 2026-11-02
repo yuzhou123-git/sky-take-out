@@ -42,6 +42,9 @@ logging:
         controller: info
 
 sky:
+  # 报表导出：生成的 Excel 会同时保存一份到该目录（找不到目录会自动创建）
+  report:
+    export-dir: D:/JavaCode/sky-take-out
   jwt:
     # 设置jwt签名加密时使用的秘钥
     admin-secret-key: itcast
